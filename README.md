@@ -1,4 +1,4 @@
-# AdaptQNet - Hardware-Aware Mixed-Precision Neural Network Optimization
+# AdaptQNet: Optimizing Quantized DNN on Microcontrollers via Adaptive Heterogeneous Processing Unit Utilization-Artifact
 
 **AdaptQNet** is a comprehensive hardware-aware neural network optimization system designed for microcontrollers and resource-constrained devices. It focuses on mixed-precision quantization, memory/computation constraints, and efficient deployment through differentiable neural architecture search (DNAS).
 
