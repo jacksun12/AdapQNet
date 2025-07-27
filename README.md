@@ -135,8 +135,8 @@ bash run_all_dnas.sh
 - **Hardware Penalty Weight**: Balance between accuracy and efficiency
 
 ### Hardware Constraints
-- **Memory Limits**: RAM and Flash usage constraints
-- **Computational Limits**: MMACs and latency requirements
+- **Memory Limits**: RAM usage constraints
+- **Computational Limits**: latency requirements
 - **Precision Constraints**: Available precision options per layer
 
 ## Experimental Results
