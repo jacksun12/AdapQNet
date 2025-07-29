@@ -171,10 +171,10 @@ AdaptQNet employs multiple mechanisms to ensure search convergence:
 ## Technical Details
 
 ### DNAS Search Process
-1. **Stage 1**: Train model weights on training set
-2. **Stage 2**: Train alpha parameters on validation set
+1. **Stage 1 Step 1**: Train model weights on training set
+2. **Stage 1 Step 2**: Train alpha parameters on validation set
 3. **Evaluation**: Assess performance on test set (avoiding information leakage)
-4. **Subnet Sampling**: Dynamic subnet sampling for fine-tuning
+4. **Stage 2**: Dual-Core enhancement search.
 
 ### Quantization Implementation
 - **PACT Quantization**: Activation quantization with learnable parameters
