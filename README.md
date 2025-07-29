@@ -146,9 +146,7 @@ AdaptQNet employs multiple mechanisms to ensure search convergence:
 2. **Alternating Optimization**: Separation of weight and architecture training
 3. **Smart Initialization**: Alpha parameters biased towards INT8
 4. **Hardware-Aware Loss**: Computation cost consideration
-5. **Dynamic Subnet Sampling**: Variable sampling frequency
 6. **Gradient Clipping**: Prevention of gradient explosion
-7. **Shared Weights**: All precision options share weights
 
 ### Performance Optimization
 - **Progressive Precision Reduction**: From FP16 to INT4/INT2 gradually
