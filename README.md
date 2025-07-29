@@ -35,9 +35,6 @@ adaptqnet-artifact/
 │   │   ├── data/               # Local data directory
 │   │   ├── run_all_dnas.sh     # Batch execution script
 │   ├── dnas_multicore/         # Multi-core experiments
-│   ├── pretrain/               # Pre-training scripts
-│   │   ├── pretrain_cifar10_mobilenetv2.py
-│   │   └── checkpoints/        # Pre-trained models
 │   ├── tensor_analysis_result/ # Analysis results
 ├── tensor_analysis/            # Tensor analysis and latency prediction
 │   ├── tensor_latency_predictor.py  # Latency prediction tool
