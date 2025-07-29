@@ -225,16 +225,3 @@ We welcome contributions through issues and pull requests to improve this projec
 
 This project is licensed under the MIT License.
 
-## Citation
-
-If this project helps your research, please cite:
-
-```bibtex
-@software{adaptqnet2024,
-  title={AdaptQNet: Hardware-Aware Mixed-Precision Neural Network Optimization},
-  author={Your Name},
-  year={2024},
-  url={https://github.com/yourusername/adaptqnet-artifact}
-}
-```
-
