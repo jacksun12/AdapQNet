@@ -1,10 +1,10 @@
-# AdaptQNet: Optimizing Quantized DNN on Microcontrollers via Adaptive Heterogeneous Processing Unit Utilization-Artifact
+# Aq-Artifact
 
-**AdaptQNet** is a comprehensive hardware-aware neural network optimization system designed for microcontrollers and resource-constrained devices. It focuses on mixed-precision quantization, memory/computation constraints, and efficient deployment through differentiable neural architecture search (DNAS).
+**This system** is a comprehensive hardware-aware neural network optimization system designed for microcontrollers and resource-constrained devices. It focuses on mixed-precision quantization, memory/computation constraints, and efficient deployment through differentiable neural architecture search (DNAS).
 
 ## Project Overview
 
-This project is a complete implementation of AdaptQNet, featuring:
+This project is a complete implementation, featuring:
 
 - **Mixed-Precision Quantization**: Support for FP32/FP16/INT8/INT4/INT2 precision levels
 - **Hardware-Aware Search**: Consideration of RAM and computational constraints
@@ -140,7 +140,7 @@ bash run_all_dnas.sh
 ## Experimental Results
 
 ### Convergence Mechanisms
-AdaptQNet employs multiple mechanisms to ensure search convergence:
+This system employs multiple mechanisms to ensure search convergence:
 
 1. **Temperature Annealing**: Exponential decay temperature control
 2. **Alternating Optimization**: Separation of weight and architecture training
