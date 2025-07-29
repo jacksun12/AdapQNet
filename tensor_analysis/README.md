@@ -1,81 +1,181 @@
-# 张量内存分析工具
+# Tensor Analysis Tools
 
-这个工具用于分析神经网络模型中各层的张量内存使用情况，并根据给定的内存阈值筛选可用的量化精度选项。
+This repository contains tools for analyzing neural network models, including tensor memory usage and latency prediction.
 
-## 功能特点
+## Tools Overview
 
-1. 分析每一层的输入和输出张量大小
-2. 支持多种精度选项（FP32/FP16/INT8/INT4/INT2）
-3. 自动筛选满足内存限制的精度选项
-4. 生成详细的分析报告
-5. 支持JSON格式结果导出
+### 1. Tensor Memory Filter (`tensor_memory_filter.py`)
+Analyzes tensor memory usage of each layer in neural network models and filters available quantization precision options based on given memory thresholds.
 
-## 使用方法
+### 2. Tensor Latency Predictor (`tensor_latency_predictor.py`)
+Predicts model latency based on layer-wise precision mapping and hardware-specific latency coefficients.
 
-### 基本用法
+## Features
+
+### Tensor Memory Filter
+1. Analyze input and output tensor sizes for each layer
+2. Support multiple precision options (FP32/FP16/INT8/INT4/INT2)
+3. Automatically filter precision options that meet memory constraints
+4. Generate detailed analysis reports
+5. Support JSON format result export
+
+### Tensor Latency Predictor
+1. Calculate MMACs (Multiply-Accumulate operations) for each layer
+2. Support precision-specific latency coefficients for different operation types
+3. Predict latency based on actual hardware performance data
+4. Generate layer-wise and total latency reports
+5. Support custom precision mapping via JSON files
+
+## Usage
+
+### Tensor Memory Filter
+
+#### Basic Usage
 
 ```bash
 python tensor_memory_filter.py --model_type mobilenetv2 --memory_threshold 524288
 ```
 
-### 完整参数说明
+#### Complete Parameter Description
 
-- `--model_type`: 模型类型 (必需)
-  - 可选值: mobilenetv2, mobilenetv3, efficientnet
-- `--batch_size`: 批次大小 (默认: 1)
-- `--input_size`: 输入图像大小 (默认: 84)
-- `--memory_threshold`: 内存阈值（字节）(默认: 512KB)
-- `--output_file`: 结果输出文件 (默认: tensor_analysis_results.json)
-- `--mode`: MobileNetV3的模式 (默认: large)
-  - 可选值: large, small
-- `--model_version`: EfficientNet的版本 (默认: b0)
+- `--model_type`: Model type (required)
+  - Options: mobilenetv2
+- `--batch_size`: Batch size (default: 1)
+- `--input_size`: Input image size (default: 84)
+- `--memory_threshold`: Memory threshold (bytes) (default: 512KB)
+- `--output_file`: Result output file (default: tensor_analysis_results.json)
 
-### 示例
+#### Examples
 
-1. 分析MobileNetV2模型（512KB内存限制）：
+1. Analyze MobileNetV2 model (512KB memory limit):
 ```bash
 python tensor_memory_filter.py --model_type mobilenetv2 --memory_threshold 524288
 ```
 
-2. 分析MobileNetV3-Small模型（1MB内存限制）：
+### Tensor Latency Predictor
+
+#### Basic Usage
+
 ```bash
-python tensor_memory_filter.py --model_type mobilenetv3 --mode small --memory_threshold 1048576
+python tensor_latency_predictor.py --model_type mobilenetv2 --input_size 224
 ```
 
-3. 分析EfficientNet-B0模型（自定义输入大小）：
+#### Complete Parameter Description
+
+- `--model_type`: Model type (required)
+  - Options: mobilenetv2, mobilenetv3, efficientnet
+- `--batch_size`: Batch size (default: 1)
+- `--input_size`: Input image size (default: 112)
+- `--precision_mapping_file`: Precision mapping file path (JSON format)
+- `--output_file`: Result output file (default: latency_analysis_results.json)
+- `--mode`: MobileNetV3 mode (default: small)
+  - Options: large, small
+- `--model_version`: EfficientNet version (default: b0)
+
+#### Examples
+
+1. Use model default precision:
 ```bash
-python tensor_memory_filter.py --model_type efficientnet --input_size 96 --memory_threshold 524288
+python tensor_latency_predictor.py --model_type mobilenetv2 --input_size 224
 ```
 
-## 输出说明
+2. Use custom precision mapping file:
+```bash
+python tensor_latency_predictor.py --model_type mobilenetv2 --input_size 224 \
+  --precision_mapping_file example_precision_mapping.json
+```
 
-### 控制台输出
 
-工具会在控制台打印详细的分析报告，包括：
-- 每一层的名称
-- 输入/输出张量的形状
-- 不同精度下的内存使用
-- 可用的精度选项
-- 内存超限警告
+#### Precision Mapping File Format (JSON)
 
-### JSON输出
+```json
+{
+  "layer_name": "precision",
+  "features.0.0": "fp32",
+  "features.1.conv.0.0": "fp16",
+  "features.1.conv.1": "int8"
+}
+```
 
-结果文件包含以下信息：
-- 模型类型
-- 输入张量形状
-- 内存阈值
-- 每层可用的精度选项
+**Supported precisions**: fp32, fp16, int8, int4, int2
 
-## 注意事项
+## Output Description
 
-1. 内存阈值应考虑实际硬件限制
-2. 批次大小会显著影响张量大小
-3. 某些层可能在所有精度下都超出内存限制
-4. 建议先用较大的阈值测试，再逐步调整
+### Tensor Memory Filter
 
-## 使用场景
+#### Console Output
 
-1. 模型量化前的可行性分析
-2. 硬件兼容性评估
-3. 内存优化方案设计
-4. 量化策略制定 
+The tool will print detailed analysis reports to the console, including:
+- Name of each layer
+- Input/output tensor shapes
+- Memory usage under different precisions
+- Available precision options
+- Memory limit warnings
+
+#### JSON Output
+
+The result file contains the following information:
+- Model type
+- Input tensor shape
+- Memory threshold
+- Available precision options for each layer
+
+### Tensor Latency Predictor
+
+#### Console Output
+
+The tool will print detailed latency analysis reports to the console, including:
+- Layer name and type
+- Input/output tensor shapes
+- MMACs (Multiply-Accumulate operations)
+- Precision and latency for each layer
+- Total latency and MMACs
+- Precision distribution statistics
+
+#### JSON Output
+
+The result file contains the following information:
+- Input shape
+- Precision mapping
+- Total latency (ns and ms)
+- Precision statistics (count and latency per precision)
+- Layer details (type, shapes, MMACs, precision, latency)
+
+#### Latency Calculation Formula
+
+```
+Latency(ms) = MMACs / (2M) × Precision Coefficient
+```
+
+The precision coefficients represent the latency time (milliseconds) per 2M MACs for different operation types:
+- **Conv**: Standard convolution operations
+- **DWConv**: Depth-wise convolution operations  
+- **Linear**: Fully connected layer operations
+
+## Notes
+
+### Tensor Memory Filter
+1. Memory threshold should consider actual hardware limitations
+2. Batch size significantly affects tensor size
+3. Some layers may exceed memory limits under all precision options
+4. It's recommended to test with larger thresholds first, then gradually adjust
+
+### Tensor Latency Predictor
+1. Latency coefficients are based on actual hardware performance data
+2. MMACs calculation considers layer-specific parameters (kernel size, stride, padding, groups)
+3. Precision mapping should match the actual model architecture
+4. Results provide both layer-wise and total latency analysis
+
+## Use Cases
+
+### Tensor Memory Filter
+1. Feasibility analysis before model quantization
+2. Hardware compatibility assessment
+3. Memory optimization scheme design
+4. Quantization strategy formulation
+
+### Tensor Latency Predictor
+1. Performance evaluation of different precision configurations
+2. Hardware-aware model optimization
+3. Latency-accuracy trade-off analysis
+4. Real-time inference system design 
