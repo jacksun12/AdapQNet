@@ -58,10 +58,9 @@ adaptqnet-artifact/
 - **Two-Stage Optimization**: Weight training + architecture parameter training
 - **Temperature Annealing**: Exponential decay temperature control
 - **Hardware Penalty**: Computation cost and memory constraints consideration
-- **Dynamic Subnet Sampling**: Intelligent subnet sampling strategy
 
 ### 3. Hardware Constraint Modeling
-- **Memory Constraints**: RAM and Flash usage analysis
+- **Memory Constraints**: RAM usage analysis
 - **Computational Constraints**: MMACs and latency requirements
 - **Precision Constraints**: Available precision options per layer
 
