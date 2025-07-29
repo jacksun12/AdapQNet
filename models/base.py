@@ -6,10 +6,11 @@ from abc import ABC, abstractmethod
 import torch.nn.functional as F
 import copy
 import os
+import logging
 from pathlib import Path
 
 class MixedPrecisionLayer(nn.Module):
-    """Base class for mixed-precision layers with shared weights"""
+    """Base class for mixed-precision layers with independent weights for each precision"""
     def __init__(self, 
                  module: nn.Module,
                  precision_options: List[str],
@@ -39,11 +40,10 @@ class MixedPrecisionLayer(nn.Module):
         alpha_init = torch.clamp(alpha_init, 1e-6, 10.0)
         self.alpha = nn.Parameter(alpha_init)
         
-        # 共享权重：只保留一个基础模块
-        self.base_module = module
+        # 为每个精度创建独立的权重副本
+        self.precision_modules = nn.ModuleDict()
         
-        # 为每个精度路径创建独立的PACT截断值
-        # 获取设备信息：如果module是Sequential，找到第一个有weight的子模块
+        # 获取设备信息
         def get_device_from_module(module):
             if hasattr(module, 'weight'):
                 return module.weight.device
@@ -51,53 +51,135 @@ class MixedPrecisionLayer(nn.Module):
                 for submodule in module:
                     if hasattr(submodule, 'weight'):
                         return submodule.weight.device
-            # 如果都找不到，使用CPU作为默认值
             return torch.device('cpu')
         
         device = get_device_from_module(module)
+        
+        # 为每个精度创建独立的模块
+        for precision in precision_options:
+            if precision == 'fp32':
+                # FP32: 直接复制原始模块
+                self.precision_modules[precision] = self._copy_module(module)
+            elif precision == 'fp16':
+                # FP16: 创建FP16版本
+                self.precision_modules[precision] = self._create_fp16_module(module)
+            elif precision.startswith('int'):
+                # INT量化: 创建量化版本
+                bits = int(precision.replace('int', ''))
+                self.precision_modules[precision] = self._create_int_module(module, bits)
+            else:
+                raise ValueError(f"Unsupported precision: {precision}")
+        
+        # 为每个精度路径创建独立的PACT截断值
         self.alpha_pact_dict = nn.ParameterDict({
             precision: nn.Parameter(torch.tensor(1.0, device=device)) for precision in precision_options
         })
 
-    def _get_quantized_module(self, precision: str) -> nn.Module:
-        """根据精度动态创建量化模块（共享权重）"""
-        if precision == 'fp32':
-            # FP32: 直接返回原始模块
-            return self.base_module
-        elif precision == 'fp16':
-            # FP16: 创建临时模块，权重转换为FP16
-            if isinstance(self.base_module, nn.Sequential):
-                return self._create_fp16_sequential()
-            else:
-                return self._create_fp16_module()
-        elif precision.startswith('int'):
-            # INT量化: 创建临时模块，权重量化
-            bits = int(precision.replace('int', ''))
-            if isinstance(self.base_module, nn.Sequential):
-                return self._create_int_sequential(bits)
-            else:
-                return self._create_int_module(bits)
+    def _copy_module(self, module: nn.Module) -> nn.Module:
+        """复制模块，保持权重独立"""
+        if isinstance(module, nn.Sequential):
+            return self._copy_sequential(module)
         else:
-            raise ValueError(f"Unsupported precision: {precision}")
+            return self._copy_single_module(module)
 
-    def _create_fp16_sequential(self) -> nn.Sequential:
-        """创建FP16版本的Sequential模块（共享权重）"""
+    def _copy_sequential(self, module: nn.Sequential) -> nn.Sequential:
+        """复制Sequential模块"""
         layers = []
-        for layer in self.base_module:
+        for layer in module:
             if isinstance(layer, nn.Conv2d):
-                # 创建新的Conv2d层，但共享权重
                 new_layer = nn.Conv2d(
                     layer.in_channels, layer.out_channels, layer.kernel_size,
                     layer.stride, layer.padding, layer.dilation, layer.groups,
                     layer.bias is not None, layer.padding_mode
                 )
-                # 共享权重，但转换为FP16
+                new_layer.weight.data = layer.weight.data.clone()
+                if layer.bias is not None:
+                    new_layer.bias.data = layer.bias.data.clone()
+                layers.append(new_layer)
+            elif isinstance(layer, nn.BatchNorm2d):
+                new_layer = nn.BatchNorm2d(layer.num_features, layer.eps, layer.momentum,
+                                         layer.affine, layer.track_running_stats)
+                if layer.affine:
+                    new_layer.weight.data = layer.weight.data.clone()
+                    new_layer.bias.data = layer.bias.data.clone()
+                if layer.track_running_stats:
+                    new_layer.running_mean.data = layer.running_mean.data.clone()
+                    new_layer.running_var.data = layer.running_var.data.clone()
+                layers.append(new_layer)
+            elif isinstance(layer, nn.Linear):
+                new_layer = nn.Linear(layer.in_features, layer.out_features, layer.bias is not None)
+                new_layer.weight.data = layer.weight.data.clone()
+                if layer.bias is not None:
+                    new_layer.bias.data = layer.bias.data.clone()
+                layers.append(new_layer)
+            else:
+                layers.append(copy.deepcopy(layer))
+        return nn.Sequential(*layers)
+
+    def _copy_single_module(self, module: nn.Module) -> nn.Module:
+        """复制单个模块"""
+        if isinstance(module, nn.Conv2d):
+            new_module = nn.Conv2d(
+                module.in_channels, module.out_channels, 
+                module.kernel_size, module.stride, 
+                module.padding, module.dilation, 
+                module.groups, module.bias is not None, 
+                module.padding_mode
+            )
+            new_module.weight.data = module.weight.data.clone()
+            if module.bias is not None:
+                new_module.bias.data = module.bias.data.clone()
+            return new_module
+        elif isinstance(module, nn.Linear):
+            new_module = nn.Linear(module.in_features, module.out_features, 
+                                 module.bias is not None)
+            new_module.weight.data = module.weight.data.clone()
+            if module.bias is not None:
+                new_module.bias.data = module.bias.data.clone()
+            return new_module
+        elif isinstance(module, nn.BatchNorm2d):
+            new_module = nn.BatchNorm2d(module.num_features, module.eps, 
+                                      module.momentum, module.affine, 
+                                      module.track_running_stats)
+            if module.affine:
+                new_module.weight.data = module.weight.data.clone()
+                new_module.bias.data = module.bias.data.clone()
+            if module.track_running_stats:
+                new_module.running_mean.data = module.running_mean.data.clone()
+                new_module.running_var.data = module.running_var.data.clone()
+            return new_module
+        else:
+            return copy.deepcopy(module)
+
+    def _get_quantized_module(self, precision: str) -> nn.Module:
+        """根据精度获取对应的独立权重模块"""
+        if precision not in self.precision_modules:
+            raise ValueError(f"Precision {precision} not found in precision_modules")
+        return self.precision_modules[precision]
+
+    def _create_fp16_module(self, module: nn.Module) -> nn.Module:
+        """创建FP16版本的模块（独立权重）"""
+        if isinstance(module, nn.Sequential):
+            return self._create_fp16_sequential(module)
+        else:
+            return self._create_fp16_single_module(module)
+
+    def _create_fp16_sequential(self, module: nn.Sequential) -> nn.Sequential:
+        """创建FP16版本的Sequential模块（独立权重）"""
+        layers = []
+        for layer in module:
+            if isinstance(layer, nn.Conv2d):
+                new_layer = nn.Conv2d(
+                    layer.in_channels, layer.out_channels, layer.kernel_size,
+                    layer.stride, layer.padding, layer.dilation, layer.groups,
+                    layer.bias is not None, layer.padding_mode
+                )
+                # 复制权重并转换为FP16
                 new_layer.weight.data = layer.weight.data.half().float()
                 if layer.bias is not None:
                     new_layer.bias.data = layer.bias.data.half().float()
                 layers.append(new_layer)
             elif isinstance(layer, nn.BatchNorm2d):
-                # 创建新的BatchNorm2d层，但共享权重
                 new_layer = nn.BatchNorm2d(layer.num_features, layer.eps, layer.momentum,
                                          layer.affine, layer.track_running_stats)
                 if layer.affine:
@@ -108,70 +190,73 @@ class MixedPrecisionLayer(nn.Module):
                     new_layer.running_var.data = layer.running_var.data.float()
                 layers.append(new_layer)
             elif isinstance(layer, nn.Linear):
-                # 创建新的Linear层，但共享权重
                 new_layer = nn.Linear(layer.in_features, layer.out_features, layer.bias is not None)
                 new_layer.weight.data = layer.weight.data.half().float()
                 if layer.bias is not None:
                     new_layer.bias.data = layer.bias.data.half().float()
                 layers.append(new_layer)
             else:
-                # 其他层直接复制
                 layers.append(copy.deepcopy(layer))
         return nn.Sequential(*layers)
 
-    def _create_fp16_module(self) -> nn.Module:
-        """创建FP16版本的单个模块（共享权重）"""
-        if isinstance(self.base_module, nn.Conv2d):
+    def _create_fp16_single_module(self, module: nn.Module) -> nn.Module:
+        """创建FP16版本的单个模块（独立权重）"""
+        if isinstance(module, nn.Conv2d):
             new_module = nn.Conv2d(
-                self.base_module.in_channels, self.base_module.out_channels, 
-                self.base_module.kernel_size, self.base_module.stride, 
-                self.base_module.padding, self.base_module.dilation, 
-                self.base_module.groups, self.base_module.bias is not None, 
-                self.base_module.padding_mode
+                module.in_channels, module.out_channels, 
+                module.kernel_size, module.stride, 
+                module.padding, module.dilation, 
+                module.groups, module.bias is not None, 
+                module.padding_mode
             )
-            new_module.weight.data = self.base_module.weight.data.half().float()
-            if self.base_module.bias is not None:
-                new_module.bias.data = self.base_module.bias.data.half().float()
+            new_module.weight.data = module.weight.data.half().float()
+            if module.bias is not None:
+                new_module.bias.data = module.bias.data.half().float()
             return new_module
-        elif isinstance(self.base_module, nn.Linear):
-            new_module = nn.Linear(self.base_module.in_features, self.base_module.out_features, 
-                                 self.base_module.bias is not None)
-            new_module.weight.data = self.base_module.weight.data.half().float()
-            if self.base_module.bias is not None:
-                new_module.bias.data = self.base_module.bias.data.half().float()
+        elif isinstance(module, nn.Linear):
+            new_module = nn.Linear(module.in_features, module.out_features, 
+                                 module.bias is not None)
+            new_module.weight.data = module.weight.data.half().float()
+            if module.bias is not None:
+                new_module.bias.data = module.bias.data.half().float()
             return new_module
-        elif isinstance(self.base_module, nn.BatchNorm2d):
-            new_module = nn.BatchNorm2d(self.base_module.num_features, self.base_module.eps, 
-                                      self.base_module.momentum, self.base_module.affine, 
-                                      self.base_module.track_running_stats)
-            if self.base_module.affine:
-                new_module.weight.data = self.base_module.weight.data.half().float()
-                new_module.bias.data = self.base_module.bias.data.half().float()
-            if self.base_module.track_running_stats:
-                new_module.running_mean.data = self.base_module.running_mean.data.float()
-                new_module.running_var.data = self.base_module.running_var.data.float()
+        elif isinstance(module, nn.BatchNorm2d):
+            new_module = nn.BatchNorm2d(module.num_features, module.eps, 
+                                      module.momentum, module.affine, 
+                                      module.track_running_stats)
+            if module.affine:
+                new_module.weight.data = module.weight.data.half().float()
+                new_module.bias.data = module.bias.data.half().float()
+            if module.track_running_stats:
+                new_module.running_mean.data = module.running_mean.data.float()
+                new_module.running_var.data = module.running_var.data.float()
             return new_module
         else:
-            return copy.deepcopy(self.base_module)
+            return copy.deepcopy(module)
 
-    def _create_int_sequential(self, bits: int) -> nn.Sequential:
-        """创建INT量化版本的Sequential模块（共享权重）"""
+    def _create_int_module(self, module: nn.Module, bits: int) -> nn.Module:
+        """创建INT量化版本的模块（独立权重）"""
+        if isinstance(module, nn.Sequential):
+            return self._create_int_sequential(module, bits)
+        else:
+            return self._create_int_single_module(module, bits)
+
+    def _create_int_sequential(self, module: nn.Sequential, bits: int) -> nn.Sequential:
+        """创建INT量化版本的Sequential模块（独立权重）"""
         layers = []
-        for layer in self.base_module:
+        for layer in module:
             if isinstance(layer, nn.Conv2d):
-                # 创建新的Conv2d层，但共享权重
                 new_layer = nn.Conv2d(
                     layer.in_channels, layer.out_channels, layer.kernel_size,
                     layer.stride, layer.padding, layer.dilation, layer.groups,
                     layer.bias is not None, layer.padding_mode
                 )
-                # 共享权重，但量化
+                # 复制权重并量化
                 new_layer.weight.data = self._dorefa_quantize_weights(layer.weight.data, bits)
                 if layer.bias is not None:
                     new_layer.bias.data = self._dorefa_quantize_weights(layer.bias.data, bits)
                 layers.append(new_layer)
             elif isinstance(layer, nn.BatchNorm2d):
-                # 创建新的BatchNorm2d层，但共享权重
                 new_layer = nn.BatchNorm2d(layer.num_features, layer.eps, layer.momentum,
                                          layer.affine, layer.track_running_stats)
                 if layer.affine:
@@ -182,51 +267,49 @@ class MixedPrecisionLayer(nn.Module):
                     new_layer.running_var.data = layer.running_var.data
                 layers.append(new_layer)
             elif isinstance(layer, nn.Linear):
-                # 创建新的Linear层，但共享权重
                 new_layer = nn.Linear(layer.in_features, layer.out_features, layer.bias is not None)
                 new_layer.weight.data = self._dorefa_quantize_weights(layer.weight.data, bits)
                 if layer.bias is not None:
                     new_layer.bias.data = self._dorefa_quantize_weights(layer.bias.data, bits)
                 layers.append(new_layer)
             else:
-                # 其他层直接复制
                 layers.append(copy.deepcopy(layer))
         return nn.Sequential(*layers)
 
-    def _create_int_module(self, bits: int) -> nn.Module:
-        """创建INT量化版本的单个模块（共享权重）"""
-        if isinstance(self.base_module, nn.Conv2d):
+    def _create_int_single_module(self, module: nn.Module, bits: int) -> nn.Module:
+        """创建INT量化版本的单个模块（独立权重）"""
+        if isinstance(module, nn.Conv2d):
             new_module = nn.Conv2d(
-                self.base_module.in_channels, self.base_module.out_channels, 
-                self.base_module.kernel_size, self.base_module.stride, 
-                self.base_module.padding, self.base_module.dilation, 
-                self.base_module.groups, self.base_module.bias is not None, 
-                self.base_module.padding_mode
+                module.in_channels, module.out_channels, 
+                module.kernel_size, module.stride, 
+                module.padding, module.dilation, 
+                module.groups, module.bias is not None, 
+                module.padding_mode
             )
-            new_module.weight.data = self._dorefa_quantize_weights(self.base_module.weight.data, bits)
-            if self.base_module.bias is not None:
-                new_module.bias.data = self._dorefa_quantize_weights(self.base_module.bias.data, bits)
+            new_module.weight.data = self._dorefa_quantize_weights(module.weight.data, bits)
+            if module.bias is not None:
+                new_module.bias.data = self._dorefa_quantize_weights(module.bias.data, bits)
             return new_module
-        elif isinstance(self.base_module, nn.Linear):
-            new_module = nn.Linear(self.base_module.in_features, self.base_module.out_features, 
-                                 self.base_module.bias is not None)
-            new_module.weight.data = self._dorefa_quantize_weights(self.base_module.weight.data, bits)
-            if self.base_module.bias is not None:
-                new_module.bias.data = self._dorefa_quantize_weights(self.base_module.bias.data, bits)
+        elif isinstance(module, nn.Linear):
+            new_module = nn.Linear(module.in_features, module.out_features, 
+                                 module.bias is not None)
+            new_module.weight.data = self._dorefa_quantize_weights(module.weight.data, bits)
+            if module.bias is not None:
+                new_module.bias.data = self._dorefa_quantize_weights(module.bias.data, bits)
             return new_module
-        elif isinstance(self.base_module, nn.BatchNorm2d):
-            new_module = nn.BatchNorm2d(self.base_module.num_features, self.base_module.eps, 
-                                      self.base_module.momentum, self.base_module.affine, 
-                                      self.base_module.track_running_stats)
-            if self.base_module.affine:
-                new_module.weight.data = self._dorefa_quantize_weights(self.base_module.weight.data, bits)
-                new_module.bias.data = self._dorefa_quantize_weights(self.base_module.bias.data, bits)
-            if self.base_module.track_running_stats:
-                new_module.running_mean.data = self.base_module.running_mean.data
-                new_module.running_var.data = self.base_module.running_var.data
+        elif isinstance(module, nn.BatchNorm2d):
+            new_module = nn.BatchNorm2d(module.num_features, module.eps, 
+                                      module.momentum, module.affine, 
+                                      module.track_running_stats)
+            if module.affine:
+                new_module.weight.data = self._dorefa_quantize_weights(module.weight.data, bits)
+                new_module.bias.data = self._dorefa_quantize_weights(module.bias.data, bits)
+            if module.track_running_stats:
+                new_module.running_mean.data = module.running_mean.data
+                new_module.running_var.data = module.running_var.data
             return new_module
         else:
-            return copy.deepcopy(self.base_module)
+            return copy.deepcopy(module)
 
     def _dorefa_quantize_weights(self, w: torch.Tensor, k: int) -> torch.Tensor:
         """Improved DoReFa-Net weight quantization with STE for QAT (Per-Channel)"""
@@ -267,8 +350,8 @@ class MixedPrecisionLayer(nn.Module):
         # 确保w_scaled在有效范围内
         w_scaled = torch.clamp(w_scaled, 0.0, 1.0)
         
-        # 使用STE：前向传播时量化，反向传播时直通
-        w_quantized = torch.round(w_scaled * (2**k - 1)) / (2**k - 1)
+        # 使用floor确保不同bit-width之间的倍数关系（参考AdaBits）
+        w_quantized = torch.floor(w_scaled * (2**k - 1)) / (2**k - 1)
         w_quantized = w_scaled + (w_quantized - w_scaled).detach()  # STE
         
         w_recovered = 2 * w_quantized - 1  # [-1,1]
@@ -324,8 +407,8 @@ class MixedPrecisionLayer(nn.Module):
         # 确保x_norm在有效范围内
         x_norm = torch.clamp(x_norm, 0.0, 1.0)
         
-        # 使用STE：前向传播时量化，反向传播时直通
-        x_q = torch.round(x_norm * (2**k - 1)) / (2**k - 1)
+        # 使用floor确保不同bit-width之间的倍数关系（参考AdaBits）
+        x_q = torch.floor(x_norm * (2**k - 1)) / (2**k - 1)
         x_q = x_norm + (x_q - x_norm).detach()  # STE
         
         result = x_q * alpha_pact
@@ -341,7 +424,7 @@ class MixedPrecisionLayer(nn.Module):
         return result
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass using Gumbel-Softmax for precision selection with shared weights"""
+        """Forward pass using Gumbel-Softmax for precision selection with shared weights - Weighted Version"""
         # 确保alpha参数大小与精度选项数量匹配
         if len(self.alpha) != len(self.precision_options):
             print(f"Warning: Alpha size ({len(self.alpha)}) doesn't match precision options count ({len(self.precision_options)})")
@@ -365,11 +448,15 @@ class MixedPrecisionLayer(nn.Module):
             new_alpha = torch.clamp(new_alpha, 1e-6, 10.0)
             self.alpha = nn.Parameter(new_alpha)
         
+        # 计算权重分布
         if self.training:
+            # 训练时：使用Gumbel-Softmax计算权重分布
             weights = F.gumbel_softmax(self.alpha, tau=max(self.temperature, 0.1), hard=False)
         else:
+            # 推理时：使用softmax计算权重分布
             weights = F.softmax(self.alpha / max(self.temperature, 0.1), dim=0)
         
+        # 计算所有路径的加权输出
         outputs = []
         for precision_idx, precision in enumerate(self.precision_options):
             try:
@@ -380,8 +467,14 @@ class MixedPrecisionLayer(nn.Module):
                 current_x = x  # 保持FP32输入
                 if isinstance(module, nn.Sequential):
                     for layer in module:
+                        # 对于BatchNorm层，确保在推理时处于eval模式
+                        if isinstance(layer, nn.BatchNorm2d) and not self.training:
+                            layer.eval()
                         current_x = layer(current_x)
                 else:
+                    # 对于单个模块，如果是BatchNorm且不在训练模式，设置为eval
+                    if isinstance(module, nn.BatchNorm2d) and not self.training:
+                        module.eval()
                     current_x = module(current_x)
                 
                 # 激活量化（如果需要）
@@ -391,6 +484,7 @@ class MixedPrecisionLayer(nn.Module):
                 elif precision == 'fp16':
                     current_x = current_x.half().float() 
 
+                # 加权输出
                 outputs.append(current_x * weights[precision_idx])
                 
             except Exception as e:
@@ -399,8 +493,8 @@ class MixedPrecisionLayer(nn.Module):
                 print(f"Module type: {type(module)}")
                 if hasattr(module, 'weight'):
                     print(f"Module weight shape: {module.weight.shape}")
-                # 不要立即抛出异常，而是跳过这个精度路径
-                print(f"Skipping precision {precision} due to error")
+                # 跳过这个精度路径，权重设为0
+                outputs.append(torch.zeros_like(x) * weights[precision_idx])
                 continue
         
         # 确保至少有一个输出
@@ -409,9 +503,7 @@ class MixedPrecisionLayer(nn.Module):
             print(f"Precision options: {self.precision_options}")
             print(f"Weights: {weights}")
             print(f"Alpha: {self.alpha}")
-            
-            # 直接抛出异常，让错误暴露出来
-            raise RuntimeError(f"No valid outputs from any precision path for layer with input shape {x.shape}")
+            return x
         
         # 加权平均所有精度路径的结果
         result = sum(outputs)
@@ -441,10 +533,12 @@ class MixedPrecisionLayer(nn.Module):
         Args:
             precision: 精度类型
         """
-        # 使用基础模块计算参数量
+        # 使用对应精度的模块计算参数量
+        module = self.precision_modules[precision]
         total_params = 0
-        if isinstance(self.base_module, nn.Sequential):
-            for layer in self.base_module:
+        
+        if isinstance(module, nn.Sequential):
+            for layer in module:
                 # 只考虑卷积层和线性层
                 if isinstance(layer, nn.Conv2d):
                     # 卷积层参数量
@@ -464,21 +558,21 @@ class MixedPrecisionLayer(nn.Module):
                     total_params += params
         else:
             # 单个模块的情况
-            if isinstance(self.base_module, nn.Conv2d):
+            if isinstance(module, nn.Conv2d):
                 # 卷积层参数量
-                if hasattr(self.base_module, 'groups') and self.base_module.groups > 1:
-                    params = (self.base_module.in_channels // self.base_module.groups) * self.base_module.out_channels * self.base_module.kernel_size[0] * self.base_module.kernel_size[1]
+                if hasattr(module, 'groups') and module.groups > 1:
+                    params = (module.in_channels // module.groups) * module.out_channels * module.kernel_size[0] * module.kernel_size[1]
                 else:
-                    params = self.base_module.in_channels * self.base_module.out_channels * self.base_module.kernel_size[0] * self.base_module.kernel_size[1]
+                    params = module.in_channels * module.out_channels * module.kernel_size[0] * module.kernel_size[1]
                 
-                if self.base_module.bias is not None:
-                    params += self.base_module.out_channels
+                if module.bias is not None:
+                    params += module.out_channels
                 total_params = params
-            elif isinstance(self.base_module, nn.Linear):
+            elif isinstance(module, nn.Linear):
                 # 线性层参数量
-                params = self.base_module.in_features * self.base_module.out_features
-                if self.base_module.bias is not None:
-                    params += self.base_module.out_features
+                params = module.in_features * module.out_features
+                if module.bias is not None:
+                    params += module.out_features
                 total_params = params
         
         # 计算位数
@@ -517,6 +611,11 @@ class MixedPrecisionLayer(nn.Module):
             p: self.alpha_pact_dict[p] for p in valid_precisions if p in self.alpha_pact_dict
         })
         
+        # 更新精度模块
+        self.precision_modules = nn.ModuleDict({
+            p: self.precision_modules[p] for p in valid_precisions if p in self.precision_modules
+        })
+        
         # 重新初始化alpha参数以匹配新的精度选项数量
         if len(valid_precisions) != len(self.alpha):
             device = self.alpha.device
@@ -544,12 +643,21 @@ class MixedPrecisionLayer(nn.Module):
 
 
 class BaseModel(nn.Module):
-    """Base model class"""
+    """Base model class with training strategies"""
     def __init__(self, precision_options=None, hardware_constraints=None):
         super().__init__()
         self.precision_options = precision_options or ["fp32"]
         self.hardware_constraints = hardware_constraints or {}
         self.mixed_precision_layers: List[MixedPrecisionLayer] = []
+        
+        # 训练策略相关
+        self.training_strategy = {
+            'patience': 2,  # 早停patience
+            'min_delta': 1e-4,  # 最小改善阈值
+            'best_loss': float('inf'),
+            'patience_counter': 0,
+            'epoch': 0
+        }
 
 
     def get_compute_cost(self) -> float:
@@ -585,8 +693,12 @@ class BaseModel(nn.Module):
                 module.set_precision(precision)
                 break
 
-    def copy_weights_from_pretrained(self, pretrained_model):
-        """Copy weights from pretrained model to quantized model (shared weights mode)"""
+    def copy_weights_from_pretrained(self, pretrained_model, skip_classifier=False):
+        """Copy weights from pretrained model to quantized model (shared weights mode)
+        Args:
+            pretrained_model: 预训练模型
+            skip_classifier: 是否跳过分类器层
+        """
         def _get_base_name(name):
             parts = name.split('.')
             if parts[-1].isdigit():
@@ -628,63 +740,99 @@ class BaseModel(nn.Module):
                 print(f"Found pretrained module: {name} -> {base_name}")
         
         for name, module in self.named_modules():
+            # 如果跳过分类器且当前模块是分类器，则跳过
+            if skip_classifier and ('classifier' in name or 'fc' in name or 'linear' in name):
+                print(f"Skipping classifier layer: {name}")
+                continue
+                
             if isinstance(module, MixedPrecisionLayer):
                 source_modules = _match_modules(pretrained_modules, name)
                 if source_modules:
-                    print(f"\nCopying weights for {name} (shared weights mode)")
+                    print(f"\nCopying weights for {name} (independent weights mode)")
                     source_modules.sort(key=lambda x: x[0])
                     source_modules = [m for _, m in source_modules]
                     
-                    # 直接复制到base_module
-                    base_module = module.base_module
-                    if isinstance(base_module, nn.Sequential):
-                        for i, (layer, source_module) in enumerate(zip(base_module, source_modules)):
-                            if isinstance(layer, type(source_module)):
-                                print(f"  Copying to base_module[{i}]")
-                                if hasattr(layer, 'weight'):
+                    # 为每个精度模块复制权重
+                    for precision, precision_module in module.precision_modules.items():
+                        print(f"  Copying to {precision} module")
+                        
+                        if isinstance(precision_module, nn.Sequential):
+                            # 对于Sequential模块，需要匹配每个子模块
+                            if len(source_modules) >= len(precision_module):
+                                for i, (layer, source_module) in enumerate(zip(precision_module, source_modules)):
+                                    if isinstance(layer, type(source_module)):
+                                        print(f"    Copying to {precision}_module[{i}]")
+                                        if hasattr(layer, 'weight'):
+                                            try:
+                                                if layer.weight.data.shape != source_module.weight.data.shape:
+                                                    print(f"      Skipping {precision}_module[{i}] due to shape mismatch: {layer.weight.data.shape} vs {source_module.weight.data.shape}")
+                                                    continue
+                                                layer.weight.data.copy_(source_module.weight.data)
+                                            except Exception as e:
+                                                print(f"      Error copying weight to {precision}_module[{i}]: {str(e)}")
+                                        if hasattr(layer, 'bias') and layer.bias is not None:
+                                            try:
+                                                if hasattr(source_module, 'bias') and source_module.bias is not None:
+                                                    layer.bias.data.copy_(source_module.bias.data)
+                                            except Exception as e:
+                                                print(f"      Error copying bias to {precision}_module[{i}]: {str(e)}")
+                                        if isinstance(layer, nn.BatchNorm2d):
+                                            try:
+                                                layer.running_mean.data.copy_(source_module.running_mean.data)
+                                                layer.running_var.data.copy_(source_module.running_var.data)
+                                            except Exception as e:
+                                                print(f"      Error copying BN stats to {precision}_module[{i}]: {str(e)}")
+                            else:
+                                # 如果source_modules数量不够，只复制第一个
+                                source_module = source_modules[0]
+                                for i, layer in enumerate(precision_module):
+                                    if isinstance(layer, type(source_module)):
+                                        print(f"    Copying to {precision}_module[{i}] (using first source)")
+                                        if hasattr(layer, 'weight'):
+                                            try:
+                                                if layer.weight.data.shape != source_module.weight.data.shape:
+                                                    print(f"      Skipping {precision}_module[{i}] due to shape mismatch: {layer.weight.data.shape} vs {source_module.weight.data.shape}")
+                                                    continue
+                                                layer.weight.data.copy_(source_module.weight.data)
+                                            except Exception as e:
+                                                print(f"      Error copying weight to {precision}_module[{i}]: {str(e)}")
+                                        if hasattr(layer, 'bias') and layer.bias is not None:
+                                            try:
+                                                if hasattr(source_module, 'bias') and source_module.bias is not None:
+                                                    layer.bias.data.copy_(source_module.bias.data)
+                                            except Exception as e:
+                                                print(f"      Error copying bias to {precision}_module[{i}]: {str(e)}")
+                                        if isinstance(layer, nn.BatchNorm2d):
+                                            try:
+                                                layer.running_mean.data.copy_(source_module.running_mean.data)
+                                                layer.running_var.data.copy_(source_module.running_var.data)
+                                            except Exception as e:
+                                                print(f"      Error copying BN stats to {precision}_module[{i}]: {str(e)}")
+                        else:
+                            # 单个模块的情况
+                            source_module = source_modules[0]
+                            if isinstance(precision_module, type(source_module)):
+                                print(f"    Copying to {precision}_module")
+                                if hasattr(precision_module, 'weight'):
                                     try:
-                                        if layer.weight.data.shape != source_module.weight.data.shape:
-                                            print(f"    Skipping base_module[{i}] due to shape mismatch: {layer.weight.data.shape} vs {source_module.weight.data.shape}")
+                                        if precision_module.weight.data.shape != source_module.weight.data.shape:
+                                            print(f"      Skipping {precision}_module due to shape mismatch: {precision_module.weight.data.shape} vs {source_module.weight.data.shape}")
                                             continue
-                                        layer.weight.data.copy_(source_module.weight.data)
+                                        precision_module.weight.data.copy_(source_module.weight.data)
                                     except Exception as e:
-                                        print(f"    Error copying weight to base_module[{i}]: {str(e)}")
-                                if hasattr(layer, 'bias') and layer.bias is not None:
+                                        print(f"      Error copying weight to {precision}_module: {str(e)}")
+                                if hasattr(precision_module, 'bias') and precision_module.bias is not None:
                                     try:
                                         if hasattr(source_module, 'bias') and source_module.bias is not None:
-                                            layer.bias.data.copy_(source_module.bias.data)
+                                            precision_module.bias.data.copy_(source_module.bias.data)
                                     except Exception as e:
-                                        print(f"    Error copying bias to base_module[{i}]: {str(e)}")
-                                if isinstance(layer, nn.BatchNorm2d):
+                                        print(f"      Error copying bias to {precision}_module: {str(e)}")
+                                if isinstance(precision_module, nn.BatchNorm2d):
                                     try:
-                                        layer.running_mean.data.copy_(source_module.running_mean.data)
-                                        layer.running_var.data.copy_(source_module.running_var.data)
+                                        precision_module.running_mean.data.copy_(source_module.running_mean.data)
+                                        precision_module.running_var.data.copy_(source_module.running_var.data)
                                     except Exception as e:
-                                        print(f"    Error copying BN stats to base_module[{i}]: {str(e)}")
-                    else:
-                        source_module = source_modules[0]
-                        if isinstance(base_module, type(source_module)):
-                            print(f"  Copying to base_module")
-                            if hasattr(base_module, 'weight'):
-                                try:
-                                    if base_module.weight.data.shape != source_module.weight.data.shape:
-                                        print(f"    Skipping base_module due to shape mismatch: {base_module.weight.data.shape} vs {source_module.weight.data.shape}")
-                                        continue
-                                    base_module.weight.data.copy_(source_module.weight.data)
-                                except Exception as e:
-                                    print(f"    Error copying weight to base_module: {str(e)}")
-                            if hasattr(base_module, 'bias') and base_module.bias is not None:
-                                try:
-                                    if hasattr(source_module, 'bias') and source_module.bias is not None:
-                                        base_module.bias.data.copy_(source_module.bias.data)
-                                except Exception as e:
-                                    print(f"    Error copying bias to base_module: {str(e)}")
-                            if isinstance(base_module, nn.BatchNorm2d):
-                                try:
-                                    base_module.running_mean.data.copy_(source_module.running_mean.data)
-                                    base_module.running_var.data.copy_(source_module.running_var.data)
-                                except Exception as e:
-                                    print(f"    Error copying BN stats to base_module: {str(e)}")
+                                        print(f"      Error copying BN stats to {precision}_module: {str(e)}")
                 else:
                     print(f"Warning: No matching pretrained module found for {name}")
                     base_name = name.replace('.base_module', '')
@@ -716,3 +864,84 @@ class BaseModel(nn.Module):
                 m.prune_precision_by_memory(in_shape, out_shape, ram_limit)
         for h in hooks:
             h.remove()
+    
+    def calibrate_bn(self, calibration_loader, num_batches=100):
+        """
+        Calibrate BatchNorm statistics for all mixed precision layers
+        Args:
+            calibration_loader: DataLoader for calibration
+            num_batches: Number of batches to use for calibration
+        """
+        logger = logging.getLogger(__name__)
+        logger.info(f"开始BN校准，使用{num_batches}个batch...")
+        
+        # 保存原始训练状态
+        original_training = {}
+        for name, module in self.named_modules():
+            if isinstance(module, nn.BatchNorm2d):
+                original_training[name] = module.training
+                module.train()  # 设置为训练模式以更新running stats
+        
+        # 设置为评估模式，但保持BN为训练模式
+        self.eval()
+        
+        batch_count = 0
+        with torch.no_grad():
+            for batch_idx, (images, labels) in enumerate(calibration_loader):
+                if batch_count >= num_batches:
+                    break
+                
+                # 前向传播以更新BN统计量
+                _ = self(images)
+                batch_count += 1
+                
+                if batch_count % 10 == 0:
+                    logger.info(f"BN校准进度: {batch_count}/{num_batches}")
+        
+        # 恢复原始训练状态
+        for name, module in self.named_modules():
+            if isinstance(module, nn.BatchNorm2d) and name in original_training:
+                module.train(original_training[name])
+        
+        logger.info(f"BN校准完成，处理了{batch_count}个batch")
+    
+    def calibrate_bn_for_subnet(self, subnet_model, calibration_loader, num_batches=100):
+        """
+        Calibrate BatchNorm statistics for a specific subnet model
+        Args:
+            subnet_model: The subnet model to calibrate
+            calibration_loader: DataLoader for calibration
+            num_batches: Number of batches to use for calibration
+        """
+        logger = logging.getLogger(__name__)
+        logger.info(f"开始子网BN校准，使用{num_batches}个batch...")
+        
+        # 保存原始训练状态
+        original_training = {}
+        for name, module in subnet_model.named_modules():
+            if isinstance(module, nn.BatchNorm2d):
+                original_training[name] = module.training
+                module.train()  # 设置为训练模式以更新running stats
+        
+        # 设置为评估模式，但保持BN为训练模式
+        subnet_model.eval()
+        
+        batch_count = 0
+        with torch.no_grad():
+            for batch_idx, (images, labels) in enumerate(calibration_loader):
+                if batch_count >= num_batches:
+                    break
+                
+                # 前向传播以更新BN统计量
+                _ = subnet_model(images)
+                batch_count += 1
+                
+                if batch_count % 10 == 0:
+                    logger.info(f"子网BN校准进度: {batch_count}/{num_batches}")
+        
+        # 恢复原始训练状态
+        for name, module in subnet_model.named_modules():
+            if isinstance(module, nn.BatchNorm2d) and name in original_training:
+                module.train(original_training[name])
+        
+        logger.info(f"子网BN校准完成，处理了{batch_count}个batch")
