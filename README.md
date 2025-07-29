@@ -7,7 +7,7 @@
 This project is a complete implementation of AdaptQNet, featuring:
 
 - **Mixed-Precision Quantization**: Support for FP32/FP16/INT8/INT4/INT2 precision levels
-- **Hardware-Aware Search**: Consideration of RAM, Flash, and computational constraints
+- **Hardware-Aware Search**: Consideration of RAM and computational constraints
 - **Supported Models**: MobileNetV2 (with extensible architecture for MobileNetV3, EfficientNet)
 - **DNAS Algorithm**: Differentiable neural architecture search with temperature annealing
 - **Quantization Methods**: PACT activation quantization, DoReFa-Net weight quantization
