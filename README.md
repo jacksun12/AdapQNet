@@ -87,15 +87,17 @@ python pretrain_cifar10_mobilenetv2.py --batch_size 256
 ### 2. DNAS Search
 ```bash
 cd Search_CIFAR10/dnas
-python dnas_search_cifar10_mbv2.py \
-    --checkpoint ../pretrain/checkpoints/mobilenetv2_cifar_112x112_0.5_fp32_pretrained.pth \
+nohup env PYTHONPATH=/root python dnas_search_cifar10_mbv2.py \
+    --tensor_analysis_json ../tensor_analysis_result/mbv2_cifar10_tensor_analysis_results.json \
+    --input_size 32 > mbv2_mixed_32x32_dnas_search.log 2>&1 &
 ```
 
 ### 3. INT-only Search
 ```bash
-python dnas_search_cifar10_mbv2.py \
-    --checkpoint ../pretrain/checkpoints/mobilenetv2_cifar_112x112_0.5_fp32_pretrained.pth \
-    --int_only
+nohup env PYTHONPATH=/root python dnas_search_cifar10_mbv2.py \
+    --tensor_analysis_json ../tensor_analysis_result/mbv2_cifar10_tensor_analysis_results.json \
+    --input_size 32 \
+    --int_only > mbv2_int_only_32x32_dnas_search.log 2>&1 &
 ```
 
 ### 4. Tensor Memory Analysis
