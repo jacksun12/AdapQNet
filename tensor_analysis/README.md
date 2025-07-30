@@ -1,14 +1,14 @@
 # Tensor Analysis Tools
 
-This repository contains tools for analyzing neural network models, including tensor memory usage and latency prediction.
+This repository contains tools for analyzing neural network models, including tensor memory usage analysis.
 
 ## Tools Overview
 
 ### 1. Tensor Memory Filter (`tensor_memory_filter.py`)
 Analyzes tensor memory usage of each layer in neural network models and filters available quantization precision options based on given memory thresholds.
 
-### 2. Tensor Latency Predictor (`tensor_latency_predictor.py`)
-Predicts model latency based on layer-wise precision mapping and hardware-specific latency coefficients.
+### 2. Dual-Core Tensor Memory Filter (`tensor_memory_filter_dualcore.py`)
+Analyzes tensor memory usage for dual-core architectures, supporting dual-precision combinations and filtering available quantization options based on memory constraints.
 
 ## Features
 
@@ -19,12 +19,12 @@ Predicts model latency based on layer-wise precision mapping and hardware-specif
 4. Generate detailed analysis reports
 5. Support JSON format result export
 
-### Tensor Latency Predictor
-1. Calculate MMACs (Multiply-Accumulate operations) for each layer
-2. Support precision-specific latency coefficients for different operation types
-3. Predict latency based on actual hardware performance data
-4. Generate layer-wise and total latency reports
-5. Support custom precision mapping via JSON files
+### Dual-Core Tensor Memory Filter
+1. All features from single-core version
+2. Support dual-precision combinations (e.g., fp32+fp16, int8+int4)
+3. Analyze memory requirements for dual-core architectures
+4. Generate comprehensive dual-core analysis reports
+5. Support both single-core and dual-core precision options
 
 ## Usage
 
@@ -33,31 +33,7 @@ Predicts model latency based on layer-wise precision mapping and hardware-specif
 #### Basic Usage
 
 ```bash
-python tensor_memory_filter.py --model_type mobilenetv2 --memory_threshold 524288
-```
-
-#### Complete Parameter Description
-
-- `--model_type`: Model type (required)
-  - Options: mobilenetv2
-- `--batch_size`: Batch size (default: 1)
-- `--input_size`: Input image size (default: 84)
-- `--memory_threshold`: Memory threshold (bytes) (default: 512KB)
-- `--output_file`: Result output file (default: tensor_analysis_results.json)
-
-#### Examples
-
-1. Analyze MobileNetV2 model (512KB memory limit):
-```bash
-python tensor_memory_filter.py --model_type mobilenetv2 --memory_threshold 524288
-```
-
-### Tensor Latency Predictor
-
-#### Basic Usage
-
-```bash
-python tensor_latency_predictor.py --model_type mobilenetv2 --input_size 224
+python tensor_memory_filter.py --model_type mobilenetv2 --memory_threshold 512
 ```
 
 #### Complete Parameter Description
@@ -65,39 +41,48 @@ python tensor_latency_predictor.py --model_type mobilenetv2 --input_size 224
 - `--model_type`: Model type (required)
   - Options: mobilenetv2, mobilenetv3, efficientnet
 - `--batch_size`: Batch size (default: 1)
-- `--input_size`: Input image size (default: 112)
-- `--precision_mapping_file`: Precision mapping file path (JSON format)
-- `--output_file`: Result output file (default: latency_analysis_results.json)
+- `--input_size`: Input image size (default: 84)
+- `--memory_threshold`: Memory threshold (KB) (default: 512.0)
+- `--output_file`: Result output file (default: mbv2_cifar10_tensor_analysis_results.json)
 - `--mode`: MobileNetV3 mode (default: small)
   - Options: large, small
 - `--model_version`: EfficientNet version (default: b0)
 
 #### Examples
 
-1. Use model default precision:
+1. Analyze MobileNetV2 model (512KB memory limit):
 ```bash
-python tensor_latency_predictor.py --model_type mobilenetv2 --input_size 224
+python tensor_memory_filter.py --model_type mobilenetv2 --memory_threshold 512
 ```
 
-2. Use custom precision mapping file:
+2. Analyze MobileNetV3 model (1MB memory limit):
 ```bash
-python tensor_latency_predictor.py --model_type mobilenetv2 --input_size 224 \
-  --precision_mapping_file example_precision_mapping.json
+python tensor_memory_filter.py --model_type mobilenetv3 --memory_threshold 1024 --mode small
 ```
 
-
-#### Precision Mapping File Format (JSON)
-
-```json
-{
-  "layer_name": "precision",
-  "features.0.0": "fp32",
-  "features.1.conv.0.0": "fp16",
-  "features.1.conv.1": "int8"
-}
+3. Analyze EfficientNet model (2MB memory limit):
+```bash
+python tensor_memory_filter.py --model_type efficientnet --memory_threshold 2048 --model_version b0
 ```
 
-**Supported precisions**: fp32, fp16, int8, int4, int2
+### Dual-Core Tensor Memory Filter
+
+#### Basic Usage
+
+```bash
+python tensor_memory_filter_dualcore.py --model_type mobilenetv2 --memory_threshold 512
+```
+
+#### Complete Parameter Description
+
+Parameters are the same as the single-core version, but analysis results include dual-core options.
+
+#### Examples
+
+1. Analyze MobileNetV2 dual-core memory requirements:
+```bash
+python tensor_memory_filter_dualcore.py --model_type mobilenetv2 --memory_threshold 512
+```
 
 ## Output Description
 
@@ -120,37 +105,34 @@ The result file contains the following information:
 - Memory threshold
 - Available precision options for each layer
 
-### Tensor Latency Predictor
+### Dual-Core Tensor Memory Filter
 
 #### Console Output
 
-The tool will print detailed latency analysis reports to the console, including:
-- Layer name and type
-- Input/output tensor shapes
-- MMACs (Multiply-Accumulate operations)
-- Precision and latency for each layer
-- Total latency and MMACs
-- Precision distribution statistics
+The tool will print detailed dual-core analysis reports to the console, including:
+- Single-core tensor analysis
+- Dual-core tensor analysis with precision combinations
+- Available single-core precision options
+- Available dual-core precision combinations
+- Memory limit warnings for both modes
 
 #### JSON Output
 
 The result file contains the following information:
-- Input shape
-- Precision mapping
-- Total latency (ns and ms)
-- Precision statistics (count and latency per precision)
-- Layer details (type, shapes, MMACs, precision, latency)
+- Model type
+- Input tensor shape
+- Memory threshold
+- Available single-core precision options for each layer
+- Available dual-core precision combinations for each layer
 
-#### Latency Calculation Formula
+## Precision Options
 
-```
-Latency(ms) = MMACs / (2M) × Precision Coefficient
-```
-
-The precision coefficients represent the latency time (milliseconds) per 2M MACs for different operation types:
-- **Conv**: Standard convolution operations
-- **DWConv**: Depth-wise convolution operations  
-- **Linear**: Fully connected layer operations
+Both tools support the following precision options:
+- `fp32`: 32-bit floating point
+- `fp16`: 16-bit floating point
+- `int8`: 8-bit integer
+- `int4`: 4-bit integer
+- `int2`: 2-bit integer
 
 ## Notes
 
@@ -160,11 +142,11 @@ The precision coefficients represent the latency time (milliseconds) per 2M MACs
 3. Some layers may exceed memory limits under all precision options
 4. It's recommended to test with larger thresholds first, then gradually adjust
 
-### Tensor Latency Predictor
-1. Latency coefficients are based on actual hardware performance data
-2. MMACs calculation considers layer-specific parameters (kernel size, stride, padding, groups)
-3. Precision mapping should match the actual model architecture
-4. Results provide both layer-wise and total latency analysis
+### Dual-Core Tensor Memory Filter
+1. All notes from single-core version apply
+2. Dual-core combinations include all possible pairs of precision options
+3. Memory requirements for dual-core are the sum of two precision requirements
+4. Provides comprehensive analysis for both single-core and dual-core architectures
 
 ## Use Cases
 
@@ -174,8 +156,8 @@ The precision coefficients represent the latency time (milliseconds) per 2M MACs
 3. Memory optimization scheme design
 4. Quantization strategy formulation
 
-### Tensor Latency Predictor
-1. Performance evaluation of different precision configurations
-2. Hardware-aware model optimization
-3. Latency-accuracy trade-off analysis
-4. Real-time inference system design 
+### Dual-Core Tensor Memory Filter
+1. All use cases from single-core version
+2. Dual-core hardware optimization
+3. Mixed-precision strategy design
+4. Advanced quantization scheme development 
