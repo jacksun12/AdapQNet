@@ -18,7 +18,6 @@ class ConvBNReLU(nn.Module):
                  pretrain_mode: bool = False):
         super().__init__()
         if pretrain_mode:
-            # Use standard Sequential in pretrain mode
             self.conv_bn_relu = nn.Sequential(
                 nn.Conv2d(in_channels, out_channels, kernel_size, stride, 
                          padding=kernel_size//2, groups=groups, bias=False),
@@ -26,7 +25,6 @@ class ConvBNReLU(nn.Module):
                 nn.ReLU6(inplace=True)
             )
         else:
-            # Use MixedPrecisionLayer in quantization mode
             self.conv_bn_relu = MixedPrecisionLayer(
                 nn.Sequential(
                     nn.Conv2d(in_channels, out_channels, kernel_size, stride, 
@@ -52,14 +50,12 @@ class ConvBN(nn.Module):
                  pretrain_mode: bool = False):
         super().__init__()
         if pretrain_mode:
-            # Use standard Sequential in pretrain mode
             self.conv_bn = nn.Sequential(
                 nn.Conv2d(in_channels, out_channels, kernel_size, stride, 
                          padding=kernel_size//2, groups=groups, bias=False),
                 nn.BatchNorm2d(out_channels)
             )
         else:
-            # Use MixedPrecisionLayer in quantization mode
             self.conv_bn = MixedPrecisionLayer(
                 nn.Sequential(
                     nn.Conv2d(in_channels, out_channels, kernel_size, stride, 
@@ -86,19 +82,16 @@ class InvertedResidual(nn.Module):
         self.use_shortcut = stride == 1 and in_planes == out_planes
         hidden_dim = int(in_planes * expand_ratio)
         if expand_ratio != 1:
-            # Expansion layer: Conv + BN + ReLU
             self.expand = ConvBNReLU(in_planes, hidden_dim, 1, 
                                    precision_options=precision_options,
                                    pretrain_mode=pretrain_mode)
         else:
             self.expand = None
             hidden_dim = in_planes
-        # Depthwise convolution: Conv + BN + ReLU
         self.depthwise = ConvBNReLU(hidden_dim, hidden_dim, 3, stride, 
                                    groups=hidden_dim,
                                    precision_options=precision_options,
                                    pretrain_mode=pretrain_mode)
-        # Projection layer: Conv + BN (no ReLU)
         self.project = ConvBN(hidden_dim, out_planes, 1,
                             precision_options=precision_options,
                             pretrain_mode=pretrain_mode)
@@ -115,9 +108,7 @@ class InvertedResidual(nn.Module):
 
 class AdaptQMobileNetV2(BaseModel):
     """AdaptQNet version of MobileNetV2"""
-    # Standard MobileNetV2 configuration
     cfgs = [
-        # t, c, n, s
         [1,  16, 1, 1],
         [6,  24, 2, 2],
         [6,  32, 3, 2],
@@ -140,9 +131,7 @@ class AdaptQMobileNetV2(BaseModel):
         self.cfg = self.cfgs
         self.last_channel = int(1280 * max(1.0, width_mult))
             
-        # Build feature extractor
         self.features = self._build_mixed_precision_features(width_mult, pretrain_mode)
-        # Classifier
         if pretrain_mode:
             self.classifier = nn.Sequential(
                 nn.Dropout(0.2),
@@ -165,20 +154,16 @@ class AdaptQMobileNetV2(BaseModel):
         input_channel = int(32 * width_mult)
         features = []
         
-        # First convolution layer - adjust stride based on input size
         if self.input_size <= 64:
-            # For small inputs (32x32, 64x64), use stride=1 to preserve spatial dimensions
             first_conv = ConvBNReLU(3, input_channel, 3, stride=1,
                                    precision_options=self.precision_options,
                                    pretrain_mode=pretrain_mode)
         else:
-            # For larger inputs, use stride=2
             first_conv = ConvBNReLU(3, input_channel, 3, stride=2,
                                    precision_options=self.precision_options,
                                    pretrain_mode=pretrain_mode)
         features.append(first_conv)
         
-        # Build inverted residual blocks
         for t, c, n, s in self.cfg:
             output_channel = int(c * width_mult)
             for i in range(n):
@@ -189,7 +174,6 @@ class AdaptQMobileNetV2(BaseModel):
                     pretrain_mode=pretrain_mode
                 ))
                 input_channel = output_channel
-        # Final 1x1 convolution
         features.append(ConvBNReLU(
             input_channel, self.last_channel, 1,
             precision_options=self.precision_options,
@@ -220,25 +204,22 @@ class AdaptQMobileNetV2(BaseModel):
         return x
 
     def load_imagenet_pretrained_weights(self, pretrained_path=None):
-        """加载ImageNet预训练权重"""
+        """Load ImageNet pretrained weights"""
         import torchvision.models as models
         
         try:
             if pretrained_path and os.path.exists(pretrained_path):
-                # 从本地文件加载
-                print(f"从本地文件加载预训练权重: {pretrained_path}")
+                print(f"Loading pretrained weights from local file: {pretrained_path}")
                 checkpoint = torch.load(pretrained_path, map_location='cpu')
                 if 'state_dict' in checkpoint:
                     state_dict = checkpoint['state_dict']
                 else:
                     state_dict = checkpoint
             else:
-                # 从torchvision加载官方预训练模型
-                print("从torchvision加载ImageNet预训练权重...")
+                print("Loading ImageNet pretrained weights from torchvision...")
                 pretrained_model = models.mobilenet_v2(pretrained=True)
                 state_dict = pretrained_model.state_dict()
             
-            # 创建预训练模式的模型来加载权重
             pretrained_model = AdaptQMobileNetV2(
                 num_classes=1000,
                 width_mult=1.0,
@@ -247,63 +228,42 @@ class AdaptQMobileNetV2(BaseModel):
                 initialize_weights=False
             )
             
-            # 加载权重
             pretrained_model.load_state_dict(state_dict, strict=False)
-            print("ImageNet预训练权重加载成功")
+            print("ImageNet pretrained weights loaded successfully")
             
-            # 将权重复制到当前模型，跳过分类器层
             self.copy_weights_from_pretrained(pretrained_model, skip_classifier=True)
-            print("权重已成功迁移到当前模型（跳过分类器层）")
+            print("Weights successfully transferred to current model (skipping classifier layer)")
             
             return True
             
         except Exception as e:
-            print(f"加载ImageNet预训练权重失败: {e}")
+            print(f"Failed to load ImageNet pretrained weights: {e}")
             return False
 
     def load_imagenet_pretrained_from_url(self, url=None):
-        """从URL加载ImageNet预训练权重"""
+        """Load ImageNet pretrained weights from URL"""
         import urllib.request
         import os
         
         if url is None:
-            # 使用默认的预训练权重URL（这里需要根据实际情况设置）
             url = "https://download.pytorch.org/models/mobilenet_v2-b0353104.pth"
         
         try:
-            # 创建缓存目录
             cache_dir = os.path.expanduser("~/.cache/torch/hub/checkpoints")
             os.makedirs(cache_dir, exist_ok=True)
             
-            # 下载文件名
             filename = os.path.basename(url)
             filepath = os.path.join(cache_dir, filename)
             
-            # 如果文件不存在，则下载
             if not os.path.exists(filepath):
-                print(f"正在下载预训练权重: {url}")
+                print(f"Downloading pretrained weights: {url}")
                 urllib.request.urlretrieve(url, filepath)
-                print(f"下载完成: {filepath}")
+                print(f"Download completed: {filepath}")
             else:
-                print(f"使用缓存的预训练权重: {filepath}")
+                print(f"Using cached pretrained weights: {filepath}")
             
-            # 加载权重
             return self.load_imagenet_pretrained_weights(filepath)
             
         except Exception as e:
-            print(f"从URL加载预训练权重失败: {e}")
+            print(f"Failed to load pretrained weights from URL: {e}")
             return False
-
-# 使用示例:
-# 
-# 1. 创建模型并加载ImageNet预训练权重
-# model = AdaptQMobileNetV2(num_classes=10, input_size=224)
-# model.load_imagenet_pretrained_from_url()
-# 
-# 2. 从本地文件加载预训练权重
-# model = AdaptQMobileNetV2(num_classes=10, input_size=224)
-# model.load_imagenet_pretrained_weights("path/to/pretrained.pth")
-# 
-# 3. 使用torchvision预训练模型
-# model = AdaptQMobileNetV2(num_classes=10, input_size=224)
-# model.load_imagenet_pretrained_weights()
