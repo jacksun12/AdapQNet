@@ -19,31 +19,26 @@ class MixedPrecisionLayer(nn.Module):
         self.precision_options = precision_options
         self.temperature = temperature
         
-        # Initialize alpha parameters for precision selection with bias towards INT8
         num_options = len(precision_options)
-        alpha_init = torch.ones(num_options) * 0.1  # 基础值
+        alpha_init = torch.ones(num_options) * 0.1
         
-        # 为INT8精度设置更高的初始值
         for i, precision in enumerate(precision_options):
             if precision == 'int8':
-                alpha_init[i] = 1.0  # INT8获得更高的初始值
+                alpha_init[i] = 1.0
             elif precision == 'int4':
-                alpha_init[i] = 0.5  # INT4获得中等初始值
+                alpha_init[i] = 0.5
             elif precision == 'int2':
-                alpha_init[i] = 0.2  # INT2获得较低初始值
+                alpha_init[i] = 0.2
             elif precision == 'fp16':
-                alpha_init[i] = 0.3  # FP16获得较低初始值
+                alpha_init[i] = 0.3
             elif precision == 'fp32':
-                alpha_init[i] = 0.1  # FP32获得最低初始值
+                alpha_init[i] = 0.1
         
-        # 确保没有NaN
         alpha_init = torch.clamp(alpha_init, 1e-6, 10.0)
         self.alpha = nn.Parameter(alpha_init)
         
-        # 为每个精度创建独立的权重副本
         self.precision_modules = nn.ModuleDict()
         
-        # 获取设备信息
         def get_device_from_module(module):
             if hasattr(module, 'weight'):
                 return module.weight.device
@@ -55,35 +50,30 @@ class MixedPrecisionLayer(nn.Module):
         
         device = get_device_from_module(module)
         
-        # 为每个精度创建独立的模块
         for precision in precision_options:
             if precision == 'fp32':
-                # FP32: 直接复制原始模块
                 self.precision_modules[precision] = self._copy_module(module)
             elif precision == 'fp16':
-                # FP16: 创建FP16版本
                 self.precision_modules[precision] = self._create_fp16_module(module)
             elif precision.startswith('int'):
-                # INT量化: 创建量化版本
                 bits = int(precision.replace('int', ''))
                 self.precision_modules[precision] = self._create_int_module(module, bits)
             else:
                 raise ValueError(f"Unsupported precision: {precision}")
         
-        # 为每个精度路径创建独立的PACT截断值
         self.alpha_pact_dict = nn.ParameterDict({
             precision: nn.Parameter(torch.tensor(1.0, device=device)) for precision in precision_options
         })
 
     def _copy_module(self, module: nn.Module) -> nn.Module:
-        """复制模块，保持权重独立"""
+        """Copy module while keeping weights independent"""
         if isinstance(module, nn.Sequential):
             return self._copy_sequential(module)
         else:
             return self._copy_single_module(module)
 
     def _copy_sequential(self, module: nn.Sequential) -> nn.Sequential:
-        """复制Sequential模块"""
+        """Copy Sequential module"""
         layers = []
         for layer in module:
             if isinstance(layer, nn.Conv2d):
@@ -117,7 +107,7 @@ class MixedPrecisionLayer(nn.Module):
         return nn.Sequential(*layers)
 
     def _copy_single_module(self, module: nn.Module) -> nn.Module:
-        """复制单个模块"""
+        """Copy single module"""
         if isinstance(module, nn.Conv2d):
             new_module = nn.Conv2d(
                 module.in_channels, module.out_channels, 
@@ -152,20 +142,20 @@ class MixedPrecisionLayer(nn.Module):
             return copy.deepcopy(module)
 
     def _get_quantized_module(self, precision: str) -> nn.Module:
-        """根据精度获取对应的独立权重模块"""
+        """Get corresponding independent weight module based on precision"""
         if precision not in self.precision_modules:
             raise ValueError(f"Precision {precision} not found in precision_modules")
         return self.precision_modules[precision]
 
     def _create_fp16_module(self, module: nn.Module) -> nn.Module:
-        """创建FP16版本的模块（独立权重）"""
+        """Create FP16 version of module (independent weights)"""
         if isinstance(module, nn.Sequential):
             return self._create_fp16_sequential(module)
         else:
             return self._create_fp16_single_module(module)
 
     def _create_fp16_sequential(self, module: nn.Sequential) -> nn.Sequential:
-        """创建FP16版本的Sequential模块（独立权重）"""
+        """Create FP16 version of Sequential module (independent weights)"""
         layers = []
         for layer in module:
             if isinstance(layer, nn.Conv2d):
@@ -174,7 +164,6 @@ class MixedPrecisionLayer(nn.Module):
                     layer.stride, layer.padding, layer.dilation, layer.groups,
                     layer.bias is not None, layer.padding_mode
                 )
-                # 复制权重并转换为FP16
                 new_layer.weight.data = layer.weight.data.half().float()
                 if layer.bias is not None:
                     new_layer.bias.data = layer.bias.data.half().float()
@@ -200,7 +189,7 @@ class MixedPrecisionLayer(nn.Module):
         return nn.Sequential(*layers)
 
     def _create_fp16_single_module(self, module: nn.Module) -> nn.Module:
-        """创建FP16版本的单个模块（独立权重）"""
+        """Create FP16 version of single module (independent weights)"""
         if isinstance(module, nn.Conv2d):
             new_module = nn.Conv2d(
                 module.in_channels, module.out_channels, 
@@ -235,14 +224,14 @@ class MixedPrecisionLayer(nn.Module):
             return copy.deepcopy(module)
 
     def _create_int_module(self, module: nn.Module, bits: int) -> nn.Module:
-        """创建INT量化版本的模块（独立权重）"""
+        """Create INT quantized version of module (independent weights)"""
         if isinstance(module, nn.Sequential):
             return self._create_int_sequential(module, bits)
         else:
             return self._create_int_single_module(module, bits)
 
     def _create_int_sequential(self, module: nn.Sequential, bits: int) -> nn.Sequential:
-        """创建INT量化版本的Sequential模块（独立权重）"""
+        """Create INT quantized version of Sequential module (independent weights)"""
         layers = []
         for layer in module:
             if isinstance(layer, nn.Conv2d):
@@ -251,7 +240,6 @@ class MixedPrecisionLayer(nn.Module):
                     layer.stride, layer.padding, layer.dilation, layer.groups,
                     layer.bias is not None, layer.padding_mode
                 )
-                # 复制权重并量化
                 new_layer.weight.data = self._dorefa_quantize_weights(layer.weight.data, bits)
                 if layer.bias is not None:
                     new_layer.bias.data = self._dorefa_quantize_weights(layer.bias.data, bits)
@@ -277,7 +265,7 @@ class MixedPrecisionLayer(nn.Module):
         return nn.Sequential(*layers)
 
     def _create_int_single_module(self, module: nn.Module, bits: int) -> nn.Module:
-        """创建INT量化版本的单个模块（独立权重）"""
+        """Create INT quantized version of single module (independent weights)"""
         if isinstance(module, nn.Conv2d):
             new_module = nn.Conv2d(
                 module.in_channels, module.out_channels, 
@@ -316,51 +304,38 @@ class MixedPrecisionLayer(nn.Module):
         if k == 32:
             return w
         
-        # 添加数值稳定性检查
         if torch.isnan(w).any() or torch.isinf(w).any():
             print("Warning: NaN or Inf detected in weights before quantization")
             return w
             
-        # 更严格的梯度裁剪防止梯度爆炸
         if w.requires_grad:
-            w = torch.clamp(w, -3.0, 3.0)  # 更严格的裁剪范围
+            w = torch.clamp(w, -3.0, 3.0)
         
-        # Per-channel 量化
-        if len(w.shape) == 4:  # Conv2d weights: [out_channels, in_channels, kernel_h, kernel_w]
-            # 计算每个输出通道的最大值
+        if len(w.shape) == 4:
             orig_max = torch.amax(torch.abs(w), dim=(1, 2, 3), keepdim=True)
-        elif len(w.shape) == 2:  # Linear weights: [out_features, in_features]
-            # 计算每个输出特征的最大值
+        elif len(w.shape) == 2:
             orig_max = torch.amax(torch.abs(w), dim=1, keepdim=True)
         else:
-            # 对于其他形状，使用全局最大值
             orig_max = torch.max(torch.abs(w))
         
-        # 确保orig_max不为零且合理
-        orig_max = torch.clamp(orig_max, 1e-6, 5.0)  # 更保守的范围
+        orig_max = torch.clamp(orig_max, 1e-6, 5.0)
         
-        # 处理零值情况
         if torch.all(orig_max == 0):
             return w
         
-        # 安全的归一化
         w_normalized = w / orig_max
-        w_scaled = (w_normalized + 1) / 2  # [0,1]
+        w_scaled = (w_normalized + 1) / 2
         
-        # 确保w_scaled在有效范围内
         w_scaled = torch.clamp(w_scaled, 0.0, 1.0)
         
-        # 使用floor确保不同bit-width之间的倍数关系（参考AdaBits）
         w_quantized = torch.floor(w_scaled * (2**k - 1)) / (2**k - 1)
-        w_quantized = w_scaled + (w_quantized - w_scaled).detach()  # STE
+        w_quantized = w_scaled + (w_quantized - w_scaled).detach()
         
-        w_recovered = 2 * w_quantized - 1  # [-1,1]
+        w_recovered = 2 * w_quantized - 1
         result = w_recovered * orig_max
         
-        # 最终检查并裁剪结果
-        result = torch.clamp(result, -5.0, 5.0)  # 更保守的范围
+        result = torch.clamp(result, -5.0, 5.0)
         
-        # 检查结果
         if torch.isnan(result).any() or torch.isinf(result).any():
             print("Warning: NaN or Inf detected in quantized weights")
             return w
@@ -372,51 +347,37 @@ class MixedPrecisionLayer(nn.Module):
         if k >= 32:
             return x
             
-        # 添加数值稳定性检查
         if torch.isnan(x).any() or torch.isinf(x).any():
             print("Warning: NaN or Inf detected in activations before quantization")
             return x
             
-        # 更严格的梯度裁剪防止梯度爆炸
         if x.requires_grad:
-            x = torch.clamp(x, -3.0, 3.0)  # 更严格的裁剪范围
+            x = torch.clamp(x, -3.0, 3.0)
             
-        # 使用精度特定的PACT截断值
         if precision and precision in self.alpha_pact_dict:
             alpha_pact = F.softplus(self.alpha_pact_dict[precision])
         else:
-            # 如果没有指定精度，使用默认值（向后兼容）
             alpha_pact = F.softplus(torch.tensor(1.0, device=x.device))
             
-        # 确保alpha_pact不为零且合理
-        alpha_pact = torch.clamp(alpha_pact, 1e-6, 2.0)  # 更保守的范围
+        alpha_pact = torch.clamp(alpha_pact, 1e-6, 2.0)
         
-        # 全局激活量化（不需要per-channel）
-        # 计算全局最大值
         global_max = torch.amax(torch.abs(x))
-        # 使用全局最大值和PACT截断值的较小值
         alpha_pact = torch.min(alpha_pact, global_max)
         
-        # 确保alpha_pact不为零
-        alpha_pact = torch.clamp(alpha_pact, 1e-6, 2.0)  # 更保守的范围
+        alpha_pact = torch.clamp(alpha_pact, 1e-6, 2.0)
         
-        # 安全的PACT截断
         x_clip = torch.where(torch.abs(x) <= alpha_pact, x, alpha_pact * torch.sign(x))
         x_norm = x_clip / alpha_pact
         
-        # 确保x_norm在有效范围内
         x_norm = torch.clamp(x_norm, 0.0, 1.0)
         
-        # 使用floor确保不同bit-width之间的倍数关系（参考AdaBits）
         x_q = torch.floor(x_norm * (2**k - 1)) / (2**k - 1)
-        x_q = x_norm + (x_q - x_norm).detach()  # STE
+        x_q = x_norm + (x_q - x_norm).detach()
         
         result = x_q * alpha_pact
         
-        # 最终检查并裁剪结果
-        result = torch.clamp(result, -5.0, 5.0)  # 更保守的范围
+        result = torch.clamp(result, -5.0, 5.0)
         
-        # 检查结果
         if torch.isnan(result).any() or torch.isinf(result).any():
             print("Warning: NaN or Inf detected in quantized activations")
             return x
@@ -425,11 +386,9 @@ class MixedPrecisionLayer(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass using Gumbel-Softmax for precision selection with shared weights - Weighted Version"""
-        # 确保alpha参数大小与精度选项数量匹配
         if len(self.alpha) != len(self.precision_options):
             print(f"Warning: Alpha size ({len(self.alpha)}) doesn't match precision options count ({len(self.precision_options)})")
             print(f"Precision options: {self.precision_options}")
-            # 重新初始化alpha参数
             device = self.alpha.device
             new_alpha = torch.zeros(len(self.precision_options), device=device)
             for i, precision in enumerate(self.precision_options):
@@ -448,43 +407,33 @@ class MixedPrecisionLayer(nn.Module):
             new_alpha = torch.clamp(new_alpha, 1e-6, 10.0)
             self.alpha = nn.Parameter(new_alpha)
         
-        # 计算权重分布
         if self.training:
-            # 训练时：使用Gumbel-Softmax计算权重分布
             weights = F.gumbel_softmax(self.alpha, tau=max(self.temperature, 0.1), hard=False)
         else:
-            # 推理时：使用softmax计算权重分布
             weights = F.softmax(self.alpha / max(self.temperature, 0.1), dim=0)
         
-        # 计算所有路径的加权输出
         outputs = []
         for precision_idx, precision in enumerate(self.precision_options):
             try:
-                # 获取当前精度路径的模块（动态创建，共享权重）
                 module = self._get_quantized_module(precision)
                 
-                # 前向传播
-                current_x = x  # 保持FP32输入
+                current_x = x
                 if isinstance(module, nn.Sequential):
                     for layer in module:
-                        # 对于BatchNorm层，确保在推理时处于eval模式
                         if isinstance(layer, nn.BatchNorm2d) and not self.training:
                             layer.eval()
                         current_x = layer(current_x)
                 else:
-                    # 对于单个模块，如果是BatchNorm且不在训练模式，设置为eval
                     if isinstance(module, nn.BatchNorm2d) and not self.training:
                         module.eval()
                     current_x = module(current_x)
                 
-                # 激活量化（如果需要）
                 if precision.startswith('int'):
                     bits = int(precision.replace('int', ''))
                     current_x = self._pact_quantize_activations(current_x, bits, precision)
                 elif precision == 'fp16':
                     current_x = current_x.half().float() 
 
-                # 加权输出
                 outputs.append(current_x * weights[precision_idx])
                 
             except Exception as e:
@@ -493,11 +442,9 @@ class MixedPrecisionLayer(nn.Module):
                 print(f"Module type: {type(module)}")
                 if hasattr(module, 'weight'):
                     print(f"Module weight shape: {module.weight.shape}")
-                # 跳过这个精度路径，权重设为0
                 outputs.append(torch.zeros_like(x) * weights[precision_idx])
                 continue
         
-        # 确保至少有一个输出
         if not outputs:
             print("Warning: No valid outputs from any precision path")
             print(f"Precision options: {self.precision_options}")
@@ -505,7 +452,6 @@ class MixedPrecisionLayer(nn.Module):
             print(f"Alpha: {self.alpha}")
             return x
         
-        # 加权平均所有精度路径的结果
         result = sum(outputs)
         if torch.isnan(result).any() or torch.isinf(result).any():
             print("Warning: NaN or Inf detected in output")
@@ -529,19 +475,15 @@ class MixedPrecisionLayer(nn.Module):
         return self.precision_options[idx]
 
     def get_compute_cost(self, precision: str) -> float:
-        """返回该层参数量 × 精度位数²（不依赖输入尺寸）
-        Args:
-            precision: 精度类型
+        """Args:
+            precision: precision type
         """
-        # 使用对应精度的模块计算参数量
         module = self.precision_modules[precision]
         total_params = 0
         
         if isinstance(module, nn.Sequential):
             for layer in module:
-                # 只考虑卷积层和线性层
                 if isinstance(layer, nn.Conv2d):
-                    # 卷积层参数量
                     if hasattr(layer, 'groups') and layer.groups > 1:
                         params = (layer.in_channels // layer.groups) * layer.out_channels * layer.kernel_size[0] * layer.kernel_size[1]
                     else:
@@ -551,15 +493,12 @@ class MixedPrecisionLayer(nn.Module):
                         params += layer.out_channels
                     total_params += params
                 elif isinstance(layer, nn.Linear):
-                    # 线性层参数量
                     params = layer.in_features * layer.out_features
                     if layer.bias is not None:
                         params += layer.out_features
                     total_params += params
         else:
-            # 单个模块的情况
             if isinstance(module, nn.Conv2d):
-                # 卷积层参数量
                 if hasattr(module, 'groups') and module.groups > 1:
                     params = (module.in_channels // module.groups) * module.out_channels * module.kernel_size[0] * module.kernel_size[1]
                 else:
@@ -569,13 +508,11 @@ class MixedPrecisionLayer(nn.Module):
                     params += module.out_channels
                 total_params = params
             elif isinstance(module, nn.Linear):
-                # 线性层参数量
                 params = module.in_features * module.out_features
                 if module.bias is not None:
                     params += module.out_features
                 total_params = params
         
-        # 计算位数
         if precision.startswith('fp'):
             bits = int(precision.replace('fp', ''))
         elif precision.startswith('int'):
@@ -603,26 +540,20 @@ class MixedPrecisionLayer(nn.Module):
         if set(valid_precisions) != set(self.precision_options):
             print(f"[Prune] Layer {self.__class__.__name__}: {self.precision_options} -> {valid_precisions}")
         
-        # 更新精度选项
         self.precision_options = valid_precisions
         
-        # 更新PACT截断值
         self.alpha_pact_dict = nn.ParameterDict({
             p: self.alpha_pact_dict[p] for p in valid_precisions if p in self.alpha_pact_dict
         })
         
-        # 更新精度模块
         self.precision_modules = nn.ModuleDict({
             p: self.precision_modules[p] for p in valid_precisions if p in self.precision_modules
         })
         
-        # 重新初始化alpha参数以匹配新的精度选项数量
         if len(valid_precisions) != len(self.alpha):
             device = self.alpha.device
-            # 创建新的alpha参数，保持与精度选项的对应关系
             new_alpha = torch.zeros(len(valid_precisions), device=device)
             
-            # 为保留的精度选项设置合理的初始值
             for i, precision in enumerate(valid_precisions):
                 if precision == 'int8':
                     new_alpha[i] = 1.0
@@ -637,7 +568,6 @@ class MixedPrecisionLayer(nn.Module):
                 else:
                     new_alpha[i] = 0.1
             
-            # 确保没有NaN
             new_alpha = torch.clamp(new_alpha, 1e-6, 10.0)
             self.alpha = nn.Parameter(new_alpha)
 
@@ -650,10 +580,9 @@ class BaseModel(nn.Module):
         self.hardware_constraints = hardware_constraints or {}
         self.mixed_precision_layers: List[MixedPrecisionLayer] = []
         
-        # 训练策略相关
         self.training_strategy = {
-            'patience': 2,  # 早停patience
-            'min_delta': 1e-4,  # 最小改善阈值
+            'patience': 2,
+            'min_delta': 1e-4,
             'best_loss': float('inf'),
             'patience_counter': 0,
             'epoch': 0
@@ -696,8 +625,8 @@ class BaseModel(nn.Module):
     def copy_weights_from_pretrained(self, pretrained_model, skip_classifier=False):
         """Copy weights from pretrained model to quantized model (shared weights mode)
         Args:
-            pretrained_model: 预训练模型
-            skip_classifier: 是否跳过分类器层
+            pretrained_model: pretrained model
+            skip_classifier: whether to skip classifier layer
         """
         def _get_base_name(name):
             parts = name.split('.')
@@ -708,21 +637,17 @@ class BaseModel(nn.Module):
         def _match_modules(pretrained_modules, target_name):
             """Match pretrained modules with target module name"""
             base_name = target_name.replace('.base_module', '')
-            # 尝试多种匹配策略
             candidates = []
             
-            # 策略1：直接匹配
             if base_name in pretrained_modules:
                 candidates.extend(pretrained_modules[base_name])
             
-            # 策略2：去掉数字后缀匹配
             base_name_no_num = '.'.join([p for p in base_name.split('.') if not p.isdigit()])
             for name, modules in pretrained_modules.items():
                 name_no_num = '.'.join([p for p in name.split('.') if not p.isdigit()])
                 if name_no_num == base_name_no_num:
                     candidates.extend(modules)
             
-            # 策略3：部分匹配
             for name, modules in pretrained_modules.items():
                 if base_name in name or name in base_name:
                     candidates.extend(modules)
@@ -740,7 +665,6 @@ class BaseModel(nn.Module):
                 print(f"Found pretrained module: {name} -> {base_name}")
         
         for name, module in self.named_modules():
-            # 如果跳过分类器且当前模块是分类器，则跳过
             if skip_classifier and ('classifier' in name or 'fc' in name or 'linear' in name):
                 print(f"Skipping classifier layer: {name}")
                 continue
@@ -752,12 +676,10 @@ class BaseModel(nn.Module):
                     source_modules.sort(key=lambda x: x[0])
                     source_modules = [m for _, m in source_modules]
                     
-                    # 为每个精度模块复制权重
                     for precision, precision_module in module.precision_modules.items():
                         print(f"  Copying to {precision} module")
                         
                         if isinstance(precision_module, nn.Sequential):
-                            # 对于Sequential模块，需要匹配每个子模块
                             if len(source_modules) >= len(precision_module):
                                 for i, (layer, source_module) in enumerate(zip(precision_module, source_modules)):
                                     if isinstance(layer, type(source_module)):
@@ -783,7 +705,6 @@ class BaseModel(nn.Module):
                                             except Exception as e:
                                                 print(f"      Error copying BN stats to {precision}_module[{i}]: {str(e)}")
                             else:
-                                # 如果source_modules数量不够，只复制第一个
                                 source_module = source_modules[0]
                                 for i, layer in enumerate(precision_module):
                                     if isinstance(layer, type(source_module)):
@@ -809,7 +730,6 @@ class BaseModel(nn.Module):
                                             except Exception as e:
                                                 print(f"      Error copying BN stats to {precision}_module[{i}]: {str(e)}")
                         else:
-                            # 单个模块的情况
                             source_module = source_modules[0]
                             if isinstance(precision_module, type(source_module)):
                                 print(f"    Copying to {precision}_module")
@@ -873,16 +793,14 @@ class BaseModel(nn.Module):
             num_batches: Number of batches to use for calibration
         """
         logger = logging.getLogger(__name__)
-        logger.info(f"开始BN校准，使用{num_batches}个batch...")
+        logger.info(f"Starting BN calibration with {num_batches} batches...")
         
-        # 保存原始训练状态
         original_training = {}
         for name, module in self.named_modules():
             if isinstance(module, nn.BatchNorm2d):
                 original_training[name] = module.training
-                module.train()  # 设置为训练模式以更新running stats
+                module.train()
         
-        # 设置为评估模式，但保持BN为训练模式
         self.eval()
         
         batch_count = 0
@@ -891,19 +809,17 @@ class BaseModel(nn.Module):
                 if batch_count >= num_batches:
                     break
                 
-                # 前向传播以更新BN统计量
                 _ = self(images)
                 batch_count += 1
                 
                 if batch_count % 10 == 0:
-                    logger.info(f"BN校准进度: {batch_count}/{num_batches}")
+                    logger.info(f"BN calibration progress: {batch_count}/{num_batches}")
         
-        # 恢复原始训练状态
         for name, module in self.named_modules():
             if isinstance(module, nn.BatchNorm2d) and name in original_training:
                 module.train(original_training[name])
         
-        logger.info(f"BN校准完成，处理了{batch_count}个batch")
+        logger.info(f"BN calibration completed, processed {batch_count} batches")
     
     def calibrate_bn_for_subnet(self, subnet_model, calibration_loader, num_batches=100):
         """
@@ -914,16 +830,14 @@ class BaseModel(nn.Module):
             num_batches: Number of batches to use for calibration
         """
         logger = logging.getLogger(__name__)
-        logger.info(f"开始子网BN校准，使用{num_batches}个batch...")
+        logger.info(f"Starting subnet BN calibration with {num_batches} batches...")
         
-        # 保存原始训练状态
         original_training = {}
         for name, module in subnet_model.named_modules():
             if isinstance(module, nn.BatchNorm2d):
                 original_training[name] = module.training
-                module.train()  # 设置为训练模式以更新running stats
+                module.train()
         
-        # 设置为评估模式，但保持BN为训练模式
         subnet_model.eval()
         
         batch_count = 0
@@ -932,16 +846,14 @@ class BaseModel(nn.Module):
                 if batch_count >= num_batches:
                     break
                 
-                # 前向传播以更新BN统计量
                 _ = subnet_model(images)
                 batch_count += 1
                 
                 if batch_count % 10 == 0:
-                    logger.info(f"子网BN校准进度: {batch_count}/{num_batches}")
+                    logger.info(f"Subnet BN calibration progress: {batch_count}/{num_batches}")
         
-        # 恢复原始训练状态
         for name, module in subnet_model.named_modules():
             if isinstance(module, nn.BatchNorm2d) and name in original_training:
                 module.train(original_training[name])
         
-        logger.info(f"子网BN校准完成，处理了{batch_count}个batch")
+        logger.info(f"Subnet BN calibration completed, processed {batch_count} batches")
